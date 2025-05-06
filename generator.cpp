@@ -64,8 +64,6 @@ void* imageProcessingLoop(void* arg) {
 
         if (image.empty()) {
             std::cerr << "Error: Failed to generate image " << i << "." << std::endl;
-            // If FPS is set, we might still want to sleep to maintain timing for other operations
-            // or simply continue. For now, just continue.
             if (args->fps > 0) {
                  auto iteration_end_time = std::chrono::high_resolution_clock::now();
                  auto iteration_duration = iteration_end_time - iteration_start_time;
@@ -206,8 +204,6 @@ int main(int argc, char *argv[]) {
         std::cerr << "Supported extensions are: png, jpg, jpeg, bmp, tiff." << std::endl;
         return 1;
     }
-    // Handle jpeg vs jpg for OpenCV consistency if desired, though imwrite usually handles both.
-    // For simplicity, we'll use the user's input directly if it's in the list.
 
     // --- Directory Creation ---
     if (!fs::exists(args.output_directory)) {
