@@ -6,7 +6,9 @@
 #include <iomanip>      // For std::fixed and std::setprecision
 #include <filesystem>   // For directory creation (C++17)
 #include <pthread.h>    // For threading
-#include <stdexcept>    // For std::stoi exceptions
+#include <stdexcept>    // For std::stoi, std::stod exceptions
+#include <thread>       // For std::this_thread::sleep_for
+#include <algorithm>    // For std::tolower
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -19,6 +21,8 @@ struct ThreadArgs {
     int width;
     int height;
     int totalImages;
+    double fps; // Frames per second
+    std::string image_extension;
     std::string output_directory;
 };
 
@@ -28,26 +32,30 @@ cv::Mat generateRandomImage(int width, int height) {
         std::cerr << "Error: Image dimensions must be positive." << std::endl;
         return cv::Mat(); // Return an empty Mat on error
     }
-    // Create a 3-channel (color) image of 8-bit unsigned characters
     cv::Mat randomImage(height, width, CV_8UC3);
-    // Fill the image with random pixel values (0-255 for each channel)
     cv::randu(randomImage, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));
     return randomImage;
 }
 
-// Thread function to generate and save images
+// Thread function to generate and save images, simulating FPS
 void* imageProcessingLoop(void* arg) {
-    // Cast the void* argument back to ThreadArgs*
     ThreadArgs* args = static_cast<ThreadArgs*>(arg);
 
     double total_generation_time_sec = 0.0;
     double total_saving_time_sec = 0.0;
     int images_successfully_saved = 0;
 
-    // Overall timer for the entire operation within this thread
-    auto overall_start_time = std::chrono::high_resolution_clock::now();
+    // Calculate target frame duration if FPS is positive
+    std::chrono::duration<double> target_frame_duration(0);
+    if (args->fps > 0) {
+        target_frame_duration = std::chrono::duration<double>(1.0 / args->fps);
+    }
+
+    auto overall_thread_start_time = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < args->totalImages; ++i) {
+        auto iteration_start_time = std::chrono::high_resolution_clock::now();
+
         // --- Image Generation ---
         auto gen_start_time = std::chrono::high_resolution_clock::now();
         cv::Mat image = generateRandomImage(args->width, args->height);
@@ -56,11 +64,20 @@ void* imageProcessingLoop(void* arg) {
 
         if (image.empty()) {
             std::cerr << "Error: Failed to generate image " << i << "." << std::endl;
-            continue; // Skip this iteration
+            // If FPS is set, we might still want to sleep to maintain timing for other operations
+            // or simply continue. For now, just continue.
+            if (args->fps > 0) {
+                 auto iteration_end_time = std::chrono::high_resolution_clock::now();
+                 auto iteration_duration = iteration_end_time - iteration_start_time;
+                 if (iteration_duration < target_frame_duration) {
+                    std::this_thread::sleep_for(target_frame_duration - iteration_duration);
+                 }
+            }
+            continue; 
         }
 
         // --- Image Saving ---
-        std::string filename = args->output_directory + "/image_" + std::to_string(i) + ".png";
+        std::string filename = args->output_directory + "/image_" + std::to_string(i) + "." + args->image_extension;
         
         auto save_start_time = std::chrono::high_resolution_clock::now();
         bool saved_successfully = false;
@@ -77,38 +94,65 @@ void* imageProcessingLoop(void* arg) {
         } else {
             std::cerr << "Error: Failed to save image " << filename << std::endl;
         }
+
+        // --- FPS Simulation ---
+        if (args->fps > 0) {
+            auto iteration_end_time = std::chrono::high_resolution_clock::now();
+            auto processing_duration = std::chrono::duration<double>(iteration_end_time - iteration_start_time);
+            
+            if (processing_duration < target_frame_duration) {
+                std::this_thread::sleep_for(target_frame_duration - processing_duration);
+            }
+        }
     }
 
-    auto overall_end_time = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> overall_elapsed_seconds = overall_end_time - overall_start_time;
+    auto overall_thread_end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> overall_thread_elapsed_seconds = overall_thread_end_time - overall_thread_start_time;
 
     // Print summary
-    std::cout << std::fixed << std::setprecision(3); // Format output to 3 decimal places
+    std::cout << std::fixed << std::setprecision(3);
     std::cout << "\n--- Image Processing Thread Summary ---" << std::endl;
     std::cout << "Requested images to generate: " << args->totalImages << std::endl;
+    std::cout << "Target FPS: " << (args->fps > 0 ? std::to_string(args->fps) : "Max (no limit)") << std::endl;
+    std::cout << "Output format: ." << args->image_extension << std::endl;
     std::cout << "Images successfully generated and saved: " << images_successfully_saved << std::endl;
-    std::cout << "Total time for image generation: " << total_generation_time_sec << " seconds." << std::endl;
-    std::cout << "Total time for image saving: " << total_saving_time_sec << " seconds." << std::endl;
-    std::cout << "Total operational time in thread (gen + save): " << overall_elapsed_seconds.count() << " seconds." << std::endl;
+    std::cout << "Total time for image generation (pure): " << total_generation_time_sec << " seconds." << std::endl;
+    std::cout << "Total time for image saving (pure): " << total_saving_time_sec << " seconds." << std::endl;
+    std::cout << "Total operational time in thread (including FPS delays): " << overall_thread_elapsed_seconds.count() << " seconds." << std::endl;
+    
     if (images_successfully_saved > 0) {
         std::cout << "Average time per image (generation): " << total_generation_time_sec / images_successfully_saved << " seconds." << std::endl;
         std::cout << "Average time per image (saving): " << total_saving_time_sec / images_successfully_saved << " seconds." << std::endl;
+        if (overall_thread_elapsed_seconds.count() > 0) {
+             std::cout << "Effective FPS (based on total thread time): " << images_successfully_saved / overall_thread_elapsed_seconds.count() << " FPS." << std::endl;
+        }
     }
     std::cout << "-------------------------------------\n" << std::endl;
 
-    pthread_exit(nullptr); // Terminate the calling thread
+    pthread_exit(nullptr);
     return nullptr; 
 }
 
 void print_usage(const char* program_name) {
-    std::cerr << "Usage: " << program_name << " <width> <height> <num_images>" << std::endl;
-    std::cerr << "Example: " << program_name << " 1920 1080 50" << std::endl;
+    std::cerr << "Usage: " << program_name << " <width> <height> <num_images> <fps> <extension>" << std::endl;
+    std::cerr << "  width:         Image width in pixels (integer > 0)" << std::endl;
+    std::cerr << "  height:        Image height in pixels (integer > 0)" << std::endl;
+    std::cerr << "  num_images:    Total number of images to generate (integer > 0)" << std::endl;
+    std::cerr << "  fps:           Target frames per second (double, e.g., 30.0. Use 0 for max speed)" << std::endl;
+    std::cerr << "  extension:     Image file extension (e.g., png, jpg, bmp, tiff)" << std::endl;
+    std::cerr << "Example: " << program_name << " 1920 1080 100 30 png" << std::endl;
+}
+
+// Function to convert string to lowercase
+std::string to_lower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return std::tolower(c); });
+    return s;
 }
 
 int main(int argc, char *argv[]) {
-    // --- Argument Parsing (Standard C++) ---
-    if (argc != 4) { // program_name + width + height + num_images
-        std::cerr << "Error: Incorrect number of arguments." << std::endl;
+    if (argc != 6) { // program_name + width + height + num_images + fps + extension
+        std::cerr << "Error: Incorrect number of arguments. Expected 5, got " << argc - 1 << "." << std::endl;
         print_usage(argv[0]);
         return 1;
     }
@@ -119,14 +163,16 @@ int main(int argc, char *argv[]) {
     try {
         args.width = std::stoi(argv[1]);
         args.height = std::stoi(argv[2]);
-        args.totalImages = std::stoi(argv[3]); // Renamed from fps for clarity
+        args.totalImages = std::stoi(argv[3]);
+        args.fps = std::stod(argv[4]); // FPS can be a double
+        args.image_extension = to_lower(argv[5]);
     } catch (const std::invalid_argument& ia) {
-        std::cerr << "Error: Invalid argument. Width, height, and number of images must be integers." << std::endl;
+        std::cerr << "Error: Invalid argument type. Width, height, num_images must be integers. FPS must be a number." << std::endl;
         std::cerr << "Details: " << ia.what() << std::endl;
         print_usage(argv[0]);
         return 1;
     } catch (const std::out_of_range& oor) {
-        std::cerr << "Error: Argument out of range." << std::endl;
+        std::cerr << "Error: Argument value out of range." << std::endl;
         std::cerr << "Details: " << oor.what() << std::endl;
         print_usage(argv[0]);
         return 1;
@@ -134,17 +180,34 @@ int main(int argc, char *argv[]) {
 
     // --- Input Validation ---
     if (args.width <= 0) {
-        std::cerr << "Error: Image width must be a positive integer. Received: " << args.width << std::endl;
-        return 1;
+        std::cerr << "Error: Image width must be a positive integer. Received: " << args.width << std::endl; return 1;
     }
     if (args.height <= 0) {
-        std::cerr << "Error: Image height must be a positive integer. Received: " << args.height << std::endl;
-        return 1;
+        std::cerr << "Error: Image height must be a positive integer. Received: " << args.height << std::endl; return 1;
     }
     if (args.totalImages <= 0) {
-        std::cerr << "Error: Number of images must be a positive integer. Received: " << args.totalImages << std::endl;
+        std::cerr << "Error: Number of images must be a positive integer. Received: " << args.totalImages << std::endl; return 1;
+    }
+    if (args.fps < 0) { // Allow 0 for max speed
+        std::cerr << "Error: FPS cannot be negative. Use 0 for maximum speed. Received: " << args.fps << std::endl; return 1;
+    }
+
+    // Validate extension
+    const std::vector<std::string> supported_extensions = {"png", "jpg", "jpeg", "bmp", "tiff", "tif"};
+    bool valid_extension = false;
+    for (const auto& ext : supported_extensions) {
+        if (args.image_extension == ext) {
+            valid_extension = true;
+            break;
+        }
+    }
+    if (!valid_extension) {
+        std::cerr << "Error: Unsupported or invalid image extension: '" << args.image_extension << "'." << std::endl;
+        std::cerr << "Supported extensions are: png, jpg, jpeg, bmp, tiff." << std::endl;
         return 1;
     }
+    // Handle jpeg vs jpg for OpenCV consistency if desired, though imwrite usually handles both.
+    // For simplicity, we'll use the user's input directly if it's in the list.
 
     // --- Directory Creation ---
     if (!fs::exists(args.output_directory)) {
@@ -153,12 +216,10 @@ int main(int argc, char *argv[]) {
             if (fs::create_directories(args.output_directory)) {
                 std::cout << "Successfully created directory: " << args.output_directory << std::endl;
             } else {
-                std::cerr << "Error: Could not create directory " << args.output_directory << "." << std::endl;
-                return 1;
+                std::cerr << "Error: Could not create directory " << args.output_directory << "." << std::endl; return 1;
             }
         } catch (const fs::filesystem_error& e) {
-            std::cerr << "Filesystem error while creating directory " << args.output_directory << ": " << e.what() << std::endl;
-            return 1;
+            std::cerr << "Filesystem error while creating directory " << args.output_directory << ": " << e.what() << std::endl; return 1;
         }
     } else {
         std::cout << "Output directory '" << args.output_directory << "' already exists. Images will be saved there." << std::endl;
@@ -169,14 +230,19 @@ int main(int argc, char *argv[]) {
     auto main_op_start_time = std::chrono::high_resolution_clock::now();
 
     std::cout << "Starting image generation process..." << std::endl;
-    std::cout << "Configuration: " << args.width << "x" << args.height << " images, " << args.totalImages << " total, output to '" << args.output_directory << "'" << std::endl;
+    std::cout << "Configuration: " 
+              << args.width << "x" << args.height << " images, "
+              << args.totalImages << " total, "
+              << (args.fps > 0 ? std::to_string(args.fps) + " FPS, " : "Max FPS, ")
+              << "." << args.image_extension << " format, "
+              << "output to '" << args.output_directory << "'" << std::endl;
 
     if (pthread_create(&threadID, nullptr, imageProcessingLoop, &args)) {
         std::cerr << "Error: Failed to create the image processing thread." << std::endl;
         return 1;
     }
 
-    pthread_join(threadID, nullptr); // Wait for the thread to complete
+    pthread_join(threadID, nullptr); 
 
     auto main_op_end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> main_op_elapsed_seconds = main_op_end_time - main_op_start_time;
@@ -187,3 +253,4 @@ int main(int argc, char *argv[]) {
 
     return 0;
 }
+
