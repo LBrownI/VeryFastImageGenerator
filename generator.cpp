@@ -3,7 +3,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <pthread.h>
-#include <unistd.h>  // para usleep
+#include <chrono>  // Para medir el tiempo
 
 cv::Mat generateRandomImage(int width, int height) {
   if (width <= 0 || height <= 0) {
@@ -16,46 +16,47 @@ cv::Mat generateRandomImage(int width, int height) {
   return randomImage;
 }
 
-// --- Estructura para pasar parámetros al hilo ---
 struct ThreadArgs {
   int width;
   int height;
+  int totalImages;
 };
 
-// --- Función que ejecutará el hilo ---
 void* imageLoop(void* arg) {
   ThreadArgs* args = (ThreadArgs*)arg;
 
-  while (true) {
+  auto start = std::chrono::high_resolution_clock::now();
+
+  for (int i = 0; i < args->totalImages; ++i) {
     cv::Mat image = generateRandomImage(args->width, args->height);
     if (image.empty()) {
-      std::cerr << "Error generating image in thread." << std::endl;
-      break;
+      std::cerr << "Error generating image." << std::endl;
+      pthread_exit(nullptr);
     }
 
-    cv::imshow("Random Image", image);
-    if (cv::waitKey(1) == 27) { // salir si se presiona ESC
-      break;
-    }
-
-    usleep(20000); // Esperar 20 milisegundos ≈ 50 imágenes por segundo
+    // Opcional: mostrar o guardar cada imagen (comentado para velocidad)
+    // cv::imshow("Random Image", image);
+    // cv::waitKey(1); // Mostrar rápido
   }
 
-  return nullptr;
+  auto end = std::chrono::high_resolution_clock::now();
+  std::chrono::duration<double> elapsedSeconds = end - start;
+
+  std::cout << "Generated " << args->totalImages << " images in "
+            << elapsedSeconds.count() << " seconds." << std::endl;
+
+  pthread_exit(nullptr);
 }
 
 int main() {
-  ThreadArgs args = {1920, 1280};
+  ThreadArgs args = {1920, 1280, 50};  // Cambia tamaño o cantidad si deseas
   pthread_t threadID;
 
-  // Crear el hilo
   if (pthread_create(&threadID, nullptr, imageLoop, &args)) {
     std::cerr << "Error creating thread." << std::endl;
     return 1;
   }
 
-  // Esperar a que el hilo termine
   pthread_join(threadID, nullptr);
-
   return 0;
 }
