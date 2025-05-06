@@ -1,53 +1,61 @@
 #include <iostream>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgproc.hpp>
+#include <pthread.h>
+#include <unistd.h>  // para usleep
 
-/**
- * @brief Generates a random color image of the specified dimensions.
- *
- * Creates an 8-bit, 3-channel (BGR format by default in OpenCV) image
- * and fills each pixel's channels with random values between 0 and 255.
- *
- * @param width The desired width of the image in pixels. Must be positive.
- * @param height The desired height of the image in pixels. Must be positive.
- * @return cv::Mat An OpenCV matrix representing the generated random image.
- * Returns an empty cv::Mat if width or height are not positive.
- */
 cv::Mat generateRandomImage(int width, int height) {
   if (width <= 0 || height <= 0) {
     std::cerr << "Error: Image dimensions must be positive." << std::endl;
-    return cv::Mat(); // Return an empty Mat to indicate failure
+    return cv::Mat();
   }
 
-  // Create an 8-bit 3-channel BGR image (Height x Width)
   cv::Mat randomImage(height, width, CV_8UC3);
-
-  // Fill the image with random values (0-255 for each channel)
   cv::randu(randomImage, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));
-
   return randomImage;
 }
 
-int main(int argc, char **argv) {
-  int imageWidth = 640;
-  int imageHeight = 480;
+// --- Estructura para pasar parámetros al hilo ---
+struct ThreadArgs {
+  int width;
+  int height;
+};
 
-  std::cout << "Generating a " << imageWidth << "x" << imageHeight
-            << " random image..." << std::endl;
+// --- Función que ejecutará el hilo ---
+void* imageLoop(void* arg) {
+  ThreadArgs* args = (ThreadArgs*)arg;
 
-  cv::Mat myRandomImage = generateRandomImage(imageWidth, imageHeight);
+  while (true) {
+    cv::Mat image = generateRandomImage(args->width, args->height);
+    if (image.empty()) {
+      std::cerr << "Error generating image in thread." << std::endl;
+      break;
+    }
 
-  if (!myRandomImage.empty()) {
-    std::cout
-        << "Random image generated successfully (stored in myRandomImage)."
-        << std::endl;
-    // Display the image and wait for enter
-    cv::imshow("Random Image", myRandomImage);
-    cv::waitKey(0); // Wait for a key press indefinitely
-  } else {
-    std::cerr << "Failed to generate the random image." << std::endl;
+    cv::imshow("Random Image", image);
+    if (cv::waitKey(1) == 27) { // salir si se presiona ESC
+      break;
+    }
+
+    usleep(20000); // Esperar 20 milisegundos ≈ 50 imágenes por segundo
+  }
+
+  return nullptr;
+}
+
+int main() {
+  ThreadArgs args = {1920, 1280};
+  pthread_t threadID;
+
+  // Crear el hilo
+  if (pthread_create(&threadID, nullptr, imageLoop, &args)) {
+    std::cerr << "Error creating thread." << std::endl;
     return 1;
   }
+
+  // Esperar a que el hilo termine
+  pthread_join(threadID, nullptr);
 
   return 0;
 }
