@@ -16,6 +16,7 @@
 
 namespace fs = std::filesystem;
 
+
 // Structure to hold arguments for the image processing thread
 struct ThreadArgs {
     int width;
