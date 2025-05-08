@@ -6,9 +6,9 @@
 #include <iomanip>      // For std::fixed and std::setprecision
 #include <filesystem>   // For directory creation (C++17)
 #include <pthread.h>    // For threading
-#include <stdexcept>    // For std::stoi exceptions
+#include <stdexcept>    // For std::stoi, std::stod exceptions
 #include <algorithm>    // For std::tolower
-// #include <thread> // No longer needed for std::this_thread::sleep_for
+#include <thread>       // For std::this_thread::sleep_for
 
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
@@ -21,7 +21,7 @@ struct ThreadArgs {
     int width;
     int height;
     int totalImages;
-    // double fps; // Removed FPS as an input
+    double fps; // Frames per second target
     std::string image_extension;
     std::string output_directory;
 };
@@ -37,7 +37,7 @@ cv::Mat generateRandomImage(int width, int height) {
     return randomImage;
 }
 
-// Thread function to generate and save images
+// Thread function to generate and save images, simulating FPS
 void* imageProcessingLoop(void* arg) {
     ThreadArgs* args = static_cast<ThreadArgs*>(arg);
 
@@ -45,9 +45,16 @@ void* imageProcessingLoop(void* arg) {
     double total_saving_time_sec = 0.0;
     int images_successfully_saved = 0;
 
+    // Calculate target frame duration if FPS is positive
+    std::chrono::duration<double> target_frame_duration(0);
+    if (args->fps > 0) {
+        target_frame_duration = std::chrono::duration<double>(1.0 / args->fps);
+    }
+
     auto overall_thread_start_time = std::chrono::high_resolution_clock::now();
 
     for (int i = 0; i < args->totalImages; ++i) {
+        auto iteration_start_time = std::chrono::high_resolution_clock::now();
 
         // --- Image Generation ---
         auto gen_start_time = std::chrono::high_resolution_clock::now();
@@ -57,6 +64,14 @@ void* imageProcessingLoop(void* arg) {
 
         if (image.empty()) {
             std::cerr << "Error: Failed to generate image " << i << "." << std::endl;
+            // If FPS is set, maintain loop timing even on failure to generate/save an image
+            if (args->fps > 0) {
+                 auto iteration_end_time_on_fail = std::chrono::high_resolution_clock::now();
+                 auto iteration_duration_on_fail = std::chrono::duration<double>(iteration_end_time_on_fail - iteration_start_time);
+                 if (iteration_duration_on_fail < target_frame_duration) {
+                    std::this_thread::sleep_for(target_frame_duration - iteration_duration_on_fail);
+                 }
+            }
             continue; 
         }
 
@@ -77,32 +92,61 @@ void* imageProcessingLoop(void* arg) {
             images_successfully_saved++;
         } else {
             std::cerr << "Error: Failed to save image " << filename << std::endl;
+            // If an image fails to save, we still want to respect FPS timing for the iteration
+            if (args->fps > 0) {
+                 auto iteration_end_time_on_fail = std::chrono::high_resolution_clock::now();
+                 // Note: iteration_start_time is from the beginning of the loop
+                 auto iteration_duration_on_fail = std::chrono::duration<double>(iteration_end_time_on_fail - iteration_start_time);
+                 if (iteration_duration_on_fail < target_frame_duration) {
+                    std::this_thread::sleep_for(target_frame_duration - iteration_duration_on_fail);
+                 }
+            }
+            continue; // Continue to next image even if saving failed
         }
 
+        // --- FPS Simulation ---
+        // This block is reached only if image generation and saving were attempted
+        if (args->fps > 0) {
+            auto iteration_end_time = std::chrono::high_resolution_clock::now();
+            // Calculate duration of actual processing for this iteration (gen + save + overhead)
+            auto processing_duration = std::chrono::duration<double>(iteration_end_time - iteration_start_time);
+            
+            if (processing_duration < target_frame_duration) {
+                std::this_thread::sleep_for(target_frame_duration - processing_duration);
+            }
+        }
     }
 
     auto overall_thread_end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> overall_thread_elapsed_seconds = overall_thread_end_time - overall_thread_start_time;
 
     // Print summary
-    std::cout << std::fixed << std::setprecision(3);
+    std::cout << std::fixed << std::setprecision(3); // Set precision for floating point numbers that follow
     std::cout << "\n--- Image Processing Thread Summary ---" << std::endl;
     std::cout << "Requested images to generate: " << args->totalImages << std::endl;
-    // std::cout << "Target FPS: Max (no limit)" << std::endl; // Removed target FPS line
+    
+    std::cout << "Target FPS: ";
+    if (args->fps > 0) {
+        std::cout << args->fps; // Uses the std::fixed and std::setprecision(3)
+    } else {
+        std::cout << "Max (no limit)";
+    }
+    std::cout << std::endl;
+
     std::cout << "Output format: ." << args->image_extension << std::endl;
     std::cout << "Images successfully generated and saved: " << images_successfully_saved << std::endl;
     std::cout << "Total time for image generation (pure): " << total_generation_time_sec << " seconds." << std::endl;
     std::cout << "Total time for image saving (pure): " << total_saving_time_sec << " seconds." << std::endl;
-    std::cout << "Total operational time in thread: " << overall_thread_elapsed_seconds.count() << " seconds." << std::endl;
+    std::cout << "Total operational time in thread (including any FPS delays): " << overall_thread_elapsed_seconds.count() << " seconds." << std::endl;
     
-    if (images_successfully_saved > 0 && overall_thread_elapsed_seconds.count() > 0) {
+    if (images_successfully_saved > 0) {
         std::cout << "Average time per image (generation): " << total_generation_time_sec / images_successfully_saved << " seconds." << std::endl;
         std::cout << "Average time per image (saving): " << total_saving_time_sec / images_successfully_saved << " seconds." << std::endl;
-        std::cout << "Effective FPS (based on total thread time): " << images_successfully_saved / overall_thread_elapsed_seconds.count() << " FPS." << std::endl;
-    } else if (images_successfully_saved > 0) {
-        std::cout << "Average time per image (generation): " << total_generation_time_sec / images_successfully_saved << " seconds." << std::endl;
-        std::cout << "Average time per image (saving): " << total_saving_time_sec / images_successfully_saved << " seconds." << std::endl;
-        std::cout << "Effective FPS: N/A (total time was zero or too small)" << std::endl;
+        if (overall_thread_elapsed_seconds.count() > 0) {
+             std::cout << "Effective FPS (based on total thread time): " << images_successfully_saved / overall_thread_elapsed_seconds.count() << " FPS." << std::endl;
+        } else {
+            std::cout << "Effective FPS: N/A (total time was zero or too small)" << std::endl;
+        }
     }
     std::cout << "-------------------------------------\n" << std::endl;
 
@@ -111,12 +155,14 @@ void* imageProcessingLoop(void* arg) {
 }
 
 void print_usage(const char* program_name) {
-    std::cerr << "Usage: " << program_name << " <width> <height> <num_images> <extension>" << std::endl;
+    std::cerr << "Usage: " << program_name << " <width> <height> <num_images> <fps> <extension>" << std::endl;
     std::cerr << "  width:         Image width in pixels (integer > 0)" << std::endl;
     std::cerr << "  height:        Image height in pixels (integer > 0)" << std::endl;
     std::cerr << "  num_images:    Total number of images to generate (integer > 0)" << std::endl;
+    std::cerr << "  fps:           Target frames per second (double, e.g., 30.0. Use 0 or negative for max speed)" << std::endl;
     std::cerr << "  extension:     Image file extension (e.g., png, jpg, bmp, tiff)" << std::endl;
-    std::cerr << "Example: " << program_name << " 1920 1080 100 png" << std::endl;
+    std::cerr << "Example: " << program_name << " 1920 1080 100 30 png" << std::endl;
+    std::cerr << "Example (max speed): " << program_name << " 1920 1080 100 0 jpg" << std::endl;
 }
 
 // Function to convert string to lowercase
@@ -127,9 +173,9 @@ std::string to_lower(std::string s) {
 }
 
 int main(int argc, char *argv[]) {
-    // program_name + width + height + num_images + extension
-    if (argc != 5) { 
-        std::cerr << "Error: Incorrect number of arguments. Expected 4, got " << argc - 1 << "." << std::endl;
+    // program_name + width + height + num_images + fps + extension
+    if (argc != 6) { 
+        std::cerr << "Error: Incorrect number of arguments. Expected 5, got " << argc - 1 << "." << std::endl;
         print_usage(argv[0]);
         return 1;
     }
@@ -141,10 +187,10 @@ int main(int argc, char *argv[]) {
         args.width = std::stoi(argv[1]);
         args.height = std::stoi(argv[2]);
         args.totalImages = std::stoi(argv[3]);
-
-        args.image_extension = to_lower(argv[4]); // Argument index shifted
+        args.fps = std::stod(argv[4]); // FPS can be a double
+        args.image_extension = to_lower(argv[5]);
     } catch (const std::invalid_argument& ia) {
-        std::cerr << "Error: Invalid argument type. Width, height, num_images must be integers." << std::endl;
+        std::cerr << "Error: Invalid argument type. Width, height, num_images must be integers. FPS must be a number." << std::endl;
         std::cerr << "Details: " << ia.what() << std::endl;
         print_usage(argv[0]);
         return 1;
@@ -165,6 +211,7 @@ int main(int argc, char *argv[]) {
     if (args.totalImages <= 0) {
         std::cerr << "Error: Number of images must be a positive integer. Received: " << args.totalImages << std::endl; return 1;
     }
+    // FPS can be 0 or negative for max speed. The logic in imageProcessingLoop handles fps > 0 for throttling.
 
     // Validate extension
     const std::vector<std::string> supported_extensions = {"png", "jpg", "jpeg", "bmp", "tiff", "tif"};
@@ -202,12 +249,16 @@ int main(int argc, char *argv[]) {
     auto main_op_start_time = std::chrono::high_resolution_clock::now();
 
     std::cout << "Starting image generation process..." << std::endl;
+    // Set precision for the configuration line's FPS output
+    std::cout << std::fixed << std::setprecision(1); // For FPS in config line
     std::cout << "Configuration: " 
               << args.width << "x" << args.height << " images, "
               << args.totalImages << " total, "
-              // << (args.fps > 0 ? std::to_string(args.fps) + " FPS, " : "Max FPS, ") // Removed FPS from config line
+              << (args.fps > 0 ? "Target " + std::to_string(args.fps) + " FPS, " : "Max FPS (no target), ")
               << "." << args.image_extension << " format, "
               << "output to '" << args.output_directory << "'" << std::endl;
+    // Reset precision for general use if needed, or rely on later setprecision calls.
+    // The summary block sets its own precision.
 
     if (pthread_create(&threadID, nullptr, imageProcessingLoop, &args)) {
         std::cerr << "Error: Failed to create the image processing thread." << std::endl;
@@ -218,10 +269,11 @@ int main(int argc, char *argv[]) {
 
     auto main_op_end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> main_op_elapsed_seconds = main_op_end_time - main_op_start_time;
-
+    
+    std::cout << std::fixed << std::setprecision(3); // Ensure final output uses 3 decimal places
     std::cout << "Image processing thread has completed." << std::endl;
     std::cout << "Total execution time of main program (including thread): "
-              << std::fixed << std::setprecision(3) << main_op_elapsed_seconds.count() << " seconds." << std::endl;
+              << main_op_elapsed_seconds.count() << " seconds." << std::endl;
 
     return 0;
 }
