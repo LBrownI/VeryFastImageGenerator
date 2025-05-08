@@ -141,13 +141,19 @@ void* imageProcessingLoop(void* arg) {
     std::cout << "Total operational time in thread (including any FPS delays): " << overall_thread_elapsed_seconds.count() << " seconds." << std::endl;
     
     if (images_successfully_saved > 0) {
-        std::cout << "Average time per image (generation): " << total_generation_time_sec / images_successfully_saved << " seconds." << std::endl;
-        std::cout << "Average time per image (saving): " << total_saving_time_sec / images_successfully_saved << " seconds." << std::endl;
+        double avg_gen_time = total_generation_time_sec / images_successfully_saved;
+        double avg_save_time = total_saving_time_sec / images_successfully_saved;
+        double pure_generation_fps = images_successfully_saved / total_generation_time_sec;
+    
+        std::cout << "Average time per image (generation): " << avg_gen_time << " seconds." << std::endl;
+        std::cout << "Average time per image (saving): " << avg_save_time << " seconds." << std::endl;
+        std::cout << "Pure generation FPS (based on generation time only): " << pure_generation_fps << " FPS." << std::endl;
+    
         if (overall_thread_elapsed_seconds.count() > 0) {
-             std::cout << "Effective FPS (based on total thread time): " << images_successfully_saved / overall_thread_elapsed_seconds.count() << " FPS." << std::endl;
-        } else {
-            std::cout << "Effective FPS: N/A (total time was zero or too small)" << std::endl;
-        }
+            std::cout << "Effective FPS (including save and wait): " 
+                      << images_successfully_saved / overall_thread_elapsed_seconds.count() 
+                      << " FPS." << std::endl;
+        }    
     }
     std::cout << "-------------------------------------\n" << std::endl;
 
