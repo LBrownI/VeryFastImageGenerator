@@ -37,60 +37,78 @@ void* generateImages(void* arg) {
 
   auto start = std::chrono::high_resolution_clock::now();
 
-  for (int i = 0; i < args->totalImages; ++i) {
-    cv::Mat img = generateRandomImage(args->width, args->height);
-    if (img.empty()) {
-      std::cerr << "Error generating image." << std::endl;
-      break;
+        // --- Image Generation ---
+        auto gen_start_time = std::chrono::high_resolution_clock::now();
+        cv::Mat image = generateRandomImage(args->width, args->height);
+        auto gen_end_time = std::chrono::high_resolution_clock::now();
+        total_generation_time_sec += std::chrono::duration<double>(gen_end_time - gen_start_time).count();
+
+        if (image.empty()) {
+            std::cerr << "Error: Failed to generate image " << i << "." << std::endl;
+            continue; 
+        }
+
+        // --- Image Saving ---
+        std::string filename = args->output_directory + "/image_" + std::to_string(i) + "." + args->image_extension;
+        
+        auto save_start_time = std::chrono::high_resolution_clock::now();
+        bool saved_successfully = false;
+        try {
+            saved_successfully = cv::imwrite(filename, image);
+        } catch (const cv::Exception& ex) {
+            std::cerr << "OpenCV error while saving image " << filename << ": " << ex.what() << std::endl;
+        }
+        auto save_end_time = std::chrono::high_resolution_clock::now();
+
+        if (saved_successfully) {
+            total_saving_time_sec += std::chrono::duration<double>(save_end_time - save_start_time).count();
+            images_successfully_saved++;
+        } else {
+            std::cerr << "Error: Failed to save image " << filename << std::endl;
+            continue; // Continue to next image even if saving failed
+        }
+
+        // --- FPS Simulation (Generation Only) ---
+        if (args->fps > 0) {
+            auto gen_duration = std::chrono::duration<double>(gen_end_time - gen_start_time);
+            if (gen_duration < target_frame_duration) {
+                std::this_thread::sleep_for(target_frame_duration - gen_duration);
+            }
+        }
     }
 
-    pthread_mutex_lock(&bufferMutex);
-    imageBuffer.push_back(img.clone());
-    pthread_cond_signal(&bufferCond);
-    pthread_mutex_unlock(&bufferMutex);
-  }
+    auto overall_thread_end_time = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> overall_thread_elapsed_seconds = overall_thread_end_time - overall_thread_start_time;
 
-  auto end = std::chrono::high_resolution_clock::now();
-  generationTime = end - start;
-
-  pthread_mutex_lock(&bufferMutex);
-  generationFinished = true;
-  pthread_cond_signal(&bufferCond);
-  pthread_mutex_unlock(&bufferMutex);
-
-  pthread_exit(nullptr);
-}
-
-// --- Hilo que guarda imágenes ---
-void* saveImages(void* arg) {
-  int savedCount = 0;
-  auto start = std::chrono::high_resolution_clock::now();
-
-  while (true) {
-    pthread_mutex_lock(&bufferMutex);
-
-    while (imageBuffer.empty() && !generationFinished) {
-      pthread_cond_wait(&bufferCond, &bufferMutex);
-    }
-
-    if (!imageBuffer.empty()) {
-      cv::Mat img = imageBuffer.back();
-      imageBuffer.pop_back();
-      pthread_mutex_unlock(&bufferMutex);
-
-      std::string filename = "image_" + std::to_string(savedCount) + ".png";
-      cv::imwrite(filename, img);
-      savedCount++;
-    } else if (generationFinished) {
-      pthread_mutex_unlock(&bufferMutex);
-      break;
+    // Print summary
+    std::cout << std::fixed << std::setprecision(3); // Set precision for floating point numbers that follow
+    std::cout << "\n--- Image Processing Thread Summary ---" << std::endl;
+    std::cout << "Requested images to generate: " << args->totalImages << std::endl;
+    
+    std::cout << "Target FPS (generation only): ";
+    if (args->fps > 0) {
+        std::cout << args->fps; // Uses the std::fixed and std::setprecision(3)
     } else {
-      pthread_mutex_unlock(&bufferMutex);
+        std::cout << "Max (no limit)";
     }
-  }
+    std::cout << std::endl;
 
-  auto end = std::chrono::high_resolution_clock::now();
-  savingTime = end - start;
+    std::cout << "Output format: ." << args->image_extension << std::endl;
+    std::cout << "Images successfully generated and saved: " << images_successfully_saved << std::endl;
+    std::cout << "Total time for image generation (pure): " << total_generation_time_sec << " seconds." << std::endl;
+    std::cout << "Total time for image saving (pure): " << total_saving_time_sec << " seconds." << std::endl;
+    std::cout << "Total operational time in thread (including any FPS delays): " << overall_thread_elapsed_seconds.count() << " seconds." << std::endl;
+    
+    if (images_successfully_saved > 0) {
+        std::cout << "Average time per image (generation): " << total_generation_time_sec / images_successfully_saved << " seconds." << std::endl;
+        std::cout << "Average time per image (saving): " << total_saving_time_sec / images_successfully_saved << " seconds." << std::endl;
+        if (total_generation_time_sec > 0) {
+            std::cout << "Effective FPS (generation only): " << images_successfully_saved / total_generation_time_sec << " FPS." << std::endl;
+        } else {
+            std::cout << "Effective FPS (generation only): N/A (total generation time was zero or too small)" << std::endl;
+        }
+    }
+    std::cout << "-------------------------------------\n" << std::endl;
 
   pthread_exit(nullptr);
 }
