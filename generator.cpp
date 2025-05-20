@@ -7,15 +7,19 @@
 #include <iomanip>
 #include <filesystem>
 #include <thread>
+#include <vector> // Para std::vector<std::thread>
+#include <atomic> // Para std::atomic<int>
 #include <opencv2/core.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
 namespace fs = std::filesystem;
 
+const int NUM_SAVER_THREADS = 7; // Número de hilos guardadores
+
 struct ImageData {
     cv::Mat image;
-    int index;
+    int index; // Índice único para cada imagen generada
 };
 
 struct ThreadArgs {
@@ -27,108 +31,189 @@ struct ThreadArgs {
     std::string output_directory;
 };
 
-std::queue<ImageData> imageQueue;
-std::mutex queueMutex;
-std::condition_variable queueCV;
-bool finishedGenerating = false;
+// Variables compartidas entre hilos
+std::queue<ImageData> imageQueue;          // Cola para pasar imágenes del generador a los guardadores
+std::mutex queueMutex;                     // Mutex para proteger el acceso a imageQueue y finishedGenerating
+std::condition_variable queueCV;           // Variable de condición para sincronizar hilos
+bool finishedGenerating = false;           // Bandera para indicar que la generación ha terminado
+std::atomic<int> total_images_generated_count = 0; // Contador atómico para imágenes generadas
+std::atomic<int> total_images_saved_count = 0;     // Contador atómico para imágenes guardadas
 
+// Función para generar una imagen aleatoria
 cv::Mat generateRandomImage(int width, int height) {
     cv::Mat image(height, width, CV_8UC3);
+    // Rellena la imagen con píxeles de colores aleatorios
     cv::randu(image, cv::Scalar(0, 0, 0), cv::Scalar(255, 255, 255));
     return image;
 }
 
+// Función ejecutada por el hilo generador de imágenes
 void imageGenerator(ThreadArgs args) {
-    int images_generated = 0;
-    auto start = std::chrono::steady_clock::now();
+    auto start_generation_timer = std::chrono::steady_clock::now();
     std::chrono::duration<double> frame_duration(1.0 / args.fps);
 
     for (int i = 0; i < args.totalImages; ++i) {
-        auto frame_start_time = std::chrono::steady_clock::now();
-
         cv::Mat image = generateRandomImage(args.width, args.height);
 
-        {
+        { // Bloque de lock para proteger el acceso a la cola
             std::lock_guard<std::mutex> lock(queueMutex);
-            imageQueue.push({image, i});
+            imageQueue.push({image, i}); // Añade la imagen y su índice a la cola
         }
-        queueCV.notify_one();
-        images_generated++;
+        queueCV.notify_all(); // Notifica a TODOS los hilos guardadores que hay una nueva imagen
+        total_images_generated_count++; // Incrementa el contador de imágenes generadas
 
-        // CORREGIDO:
-        auto next_frame_time = start + frame_duration * (i + 1);
+        // Espera para mantener los FPS deseados
+        // El tiempo de inicio para el cálculo de `next_frame_time` es el inicio del bucle de generación.
+        auto next_frame_time = start_generation_timer + frame_duration * (i + 1.0);
         std::this_thread::sleep_until(next_frame_time);
     }
 
-    finishedGenerating = true;
-    queueCV.notify_one();
+    { // Bloque de lock para proteger la escritura de finishedGenerating
+        std::lock_guard<std::mutex> lock(queueMutex);
+        finishedGenerating = true; // Indica que la generación ha finalizado
+    }
+    queueCV.notify_all(); // Notifica a todos los hilos guardadores que la generación terminó
 
-    double generation_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-    double effective_fps = images_generated / generation_time;
-
-    std::cout << "--- Resumen generación ---\n";
-    std::cout << "Imágenes generadas: " << images_generated << "\n";
-    std::cout << std::fixed << std::setprecision(2)
-              << "FPS efectivo generación (reloj): " << effective_fps << "\n";
-}
-
-
-void imageSaver(ThreadArgs args) {
-    int images_saved = 0;
-
-    while (true) {
-        std::unique_lock<std::mutex> lock(queueMutex);
-        queueCV.wait(lock, []{ return !imageQueue.empty() || finishedGenerating; });
-
-        while (!imageQueue.empty()) {
-            ImageData imgData = imageQueue.front();
-            imageQueue.pop();
-            lock.unlock();
-
-            std::string filename = args.output_directory + "/image_" + std::to_string(imgData.index) + "." + args.image_extension;
-            cv::imwrite(filename, imgData.image);
-
-            images_saved++;
-            lock.lock();
-        }
-
-        if (finishedGenerating && imageQueue.empty())
-            break;
+    double generation_time_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_generation_timer).count();
+    double effective_fps = 0;
+    if (generation_time_seconds > 0) {
+        effective_fps = total_images_generated_count.load() / generation_time_seconds;
     }
 
-    std::cout << "Imágenes guardadas en disco: " << images_saved << "\n";
+    // Imprime resumen de la generación desde el hilo generador
+    std::cout << "--- Resumen generación (hilo generador) ---\n";
+    std::cout << "Imágenes objetivo a generar: " << args.totalImages << "\n";
+    std::cout << "Imágenes realmente generadas y encoladas: " << total_images_generated_count.load() << "\n";
+    std::cout << std::fixed << std::setprecision(2)
+              << "Tiempo de generación del hilo: " << generation_time_seconds << " segundos\n";
+    std::cout << std::fixed << std::setprecision(2)
+              << "FPS efectivo generación (reloj del hilo): " << effective_fps << "\n";
+}
+
+// Función ejecutada por cada uno de los hilos guardadores de imágenes
+void imageSaver(ThreadArgs args, int saver_id) {
+    // El ID del guardador (saver_id) se pasa por si se necesita para depuración, no se usa activamente aquí.
+    while (true) {
+        std::unique_lock<std::mutex> lock(queueMutex);
+        // Espera hasta que la cola no esté vacía O la generación haya terminado
+        queueCV.wait(lock, []{ return !imageQueue.empty() || finishedGenerating; });
+
+        // Procesa todas las imágenes disponibles en la cola antes de reevaluar finishedGenerating
+        while (!imageQueue.empty()) {
+            ImageData imgData = imageQueue.front(); // Toma la imagen del frente de la cola
+            imageQueue.pop();                      // Remueve la imagen de la cola
+            lock.unlock(); // Desbloquea el mutex mientras se guarda la imagen (operación costosa)
+
+            std::string filename = args.output_directory + "/image_" + std::to_string(imgData.index) + "." + args.image_extension;
+            bool success = cv::imwrite(filename, imgData.image); // Guarda la imagen en disco
+
+            if (success) {
+                total_images_saved_count++; // Incrementa el contador global de imágenes guardadas
+            } else {
+                std::cerr << "Error: Hilo guardador " << saver_id << " no pudo guardar la imagen: " << filename << std::endl;
+            }
+
+            lock.lock(); // Re-bloquea el mutex para la condición del bucle y para pop/empty check
+        }
+
+        // Si la generación ha terminado Y la cola está vacía, el hilo guardador puede terminar
+        if (finishedGenerating && imageQueue.empty()) {
+            break;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
     if (argc != 6) {
-        std::cerr << "Uso: " << argv[0] << " <ancho> <alto> <duracion_segundos> <fps> <extension>\n";
+        std::cerr << "Uso: " << argv[0] << " <ancho> <alto> <duracion_segundos> <fps> <extension_imagen>\n";
+        std::cerr << "Ejemplo: " << argv[0] << " 640 480 10 30 png\n";
         return 1;
     }
 
     ThreadArgs args;
-    args.width = std::stoi(argv[1]);
-    args.height = std::stoi(argv[2]);
-    int duration_seconds = std::stoi(argv[3]);
-    args.fps = std::stod(argv[4]);
-    args.totalImages = static_cast<int>(args.fps * duration_seconds);
-    args.image_extension = argv[5];
+    try {
+        args.width = std::stoi(argv[1]);
+        args.height = std::stoi(argv[2]);
+        int duration_seconds = std::stoi(argv[3]);
+        args.fps = std::stod(argv[4]);
+        args.totalImages = static_cast<int>(args.fps * duration_seconds); // Calcula el total de imágenes a generar
+        args.image_extension = argv[5];
+    } catch (const std::invalid_argument& ia) {
+        std::cerr << "Error: Argumento inválido proporcionado. " << ia.what() << std::endl;
+        return 1;
+    } catch (const std::out_of_range& oor) {
+        std::cerr << "Error: Argumento fuera de rango. " << oor.what() << std::endl;
+        return 1;
+    }
+    
     args.output_directory = "generated_images";
 
-    if (!fs::exists(args.output_directory)) {
-        fs::create_directories(args.output_directory);
+    if (args.width <= 0 || args.height <= 0 || args.fps <= 0 || args.totalImages < 0) {
+        std::cerr << "Error: Ancho, alto y FPS deben ser positivos. El total de imágenes no puede ser negativo." << std::endl;
+        return 1;
     }
 
-    auto start_global = std::chrono::steady_clock::now();
+    if (args.totalImages == 0) {
+        std::cout << "Total de imágenes a generar es 0. No se realizará ninguna acción." << std::endl;
+        return 0;
+    }
 
+    // Crea el directorio de salida si no existe
+    if (!fs::exists(args.output_directory)) {
+        if (!fs::create_directories(args.output_directory)) {
+            std::cerr << "Error: No se pudo crear el directorio de salida: " << args.output_directory << std::endl;
+            return 1;
+        }
+    }
+
+    auto start_global = std::chrono::steady_clock::now(); // Tiempo de inicio global
+
+    // Crea e inicia el hilo generador
     std::thread generatorThread(imageGenerator, args);
-    std::thread saverThread(imageSaver, args);
 
+    // Crea e inicia los hilos guardadores
+    std::vector<std::thread> saverThreads;
+    for (int i = 0; i < NUM_SAVER_THREADS; ++i) {
+        saverThreads.emplace_back(imageSaver, args, i); // Pasa args y un ID para cada hilo guardador
+    }
+
+    // Espera a que el hilo generador termine
     generatorThread.join();
-    saverThread.join();
 
-    auto total_elapsed = std::chrono::steady_clock::now() - start_global;
+    // Espera a que todos los hilos guardadores terminen
+    for (int i = 0; i < NUM_SAVER_THREADS; ++i) {
+        saverThreads[i].join();
+    }
 
-    std::cout << "Tiempo total real: " << std::chrono::duration<double>(total_elapsed).count() << " segundos\n";
+    auto end_global = std::chrono::steady_clock::now(); // Tiempo de finalización global
+    std::chrono::duration<double> total_elapsed = end_global - start_global;
+
+    // Imprime el resumen global de la ejecución
+    std::cout << "\n--- Resumen Global ---\n";
+    std::cout << "Imágenes generadas (contador global): " << total_images_generated_count.load() << "\n";
+    std::cout << "Imágenes guardadas (contador global): " << total_images_saved_count.load() << "\n";
+    std::cout << std::fixed << std::setprecision(2)
+              << "Tiempo total de ejecución: " << total_elapsed.count() << " segundos\n";
+    
+    if (total_elapsed.count() > 0) {
+        double overall_saving_fps = total_images_saved_count.load() / total_elapsed.count();
+         std::cout << std::fixed << std::setprecision(2)
+              << "FPS efectivo de guardado (global, basado en tiempo total): " << overall_saving_fps << "\n";
+    }
+
+    // Verificación opcional: contar archivos en el directorio de salida
+    int files_in_directory = 0;
+    try {
+        for (const auto& entry : fs::directory_iterator(args.output_directory)) {
+            if (entry.is_regular_file()) {
+                files_in_directory++;
+            }
+        }
+        std::cout << "Imágenes verificadas en directorio: " << files_in_directory << "\n";
+    } catch (const fs::filesystem_error& e) {
+        // No es crítico si esta parte falla, pero es útil informar.
+        std::cerr << "Advertencia: Error al contar archivos en el directorio de salida: " << e.what() << std::endl;
+    }
 
     return 0;
 }
