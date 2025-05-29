@@ -1,105 +1,88 @@
-# 🖼️ Very Fast Image Generator
+# VeryFastImageGenerator
 
-Este proyecto es una aplicación multihilo escrita en C++ que genera imágenes aleatorias de manera eficiente utilizando OpenCV. Un hilo productor crea imágenes al ritmo de un FPS objetivo, mientras varios hilos consumidores las guardan en disco. Es ideal para pruebas de rendimiento, generación de datos de entrenamiento artificiales o benchmarking de sistemas de I/O.
+This is a C++ application designed to generate and save images to disk at high speeds, leveraging multithreading for concurrent image generation and saving. It provides a command-line interface to configure image dimensions, generation duration, frames per second (FPS), and image format. The application outputs detailed statistics on generation and saving performance, including any images lost due to processing bottlenecks of the device.
 
----
+## Features
 
-## 📦 Características
+*   Concurrent image generation and saving using C++ threads.
+*   Configurable image width, height, generation duration, FPS, and output image extension.
+*   Detailed performance summary, including effective FPS for generation and saving, and counts of lost images.
+*   Uses OpenCV for image generation and saving.
 
-- Generación de imágenes aleatorias en formato RGB.
-- Control preciso del FPS objetivo.
-- Sistema de cola limitada con descarte de frames antiguos si hay sobrecarga.
-- Múltiples hilos guardadores para maximizar el rendimiento de escritura.
-- Métricas detalladas de rendimiento y pérdidas.
-- Directorio de salida automático.
+## Dependencies
 
----
+*   **C++ Compiler** (supporting C++17 or later for `std::filesystem`)
+*   **CMake** (version 3.10 or later recommended)
+*   **OpenCV** (version 4.x recommended)
 
-## 🔧 Requisitos
+## Building the Project
 
-- **CMake ≥ 3.10**
-- **g++ ≥ 11** (o cualquier compilador compatible con C++17 o superior)
-- **OpenCV ≥ 4.0**
-- **Linux o WSL (recomendado para pruebas de rendimiento con múltiples hilos)**
+1.  **Clone the repository (if applicable) or ensure you have the source code.**
+2.  **Create a build directory:**
+    ```bash
+    mkdir build
+    cd build
+    ```
+3.  **Run CMake to configure the project:**
+    ```bash
+    cmake ..
+    ```
 
-Instala dependencias en Ubuntu:
-```bash
-sudo apt update
-sudo apt install build-essential cmake libopencv-dev
-```
+4.  **Compile the project:**
+    ```bash
+    make -j
+    ```
+    The executable `random_image_generator` will be created in the `build` directory.
 
----
+## Running the Application
 
-## 🚀 Compilación
-
-```bash
-mkdir build
-cd build
-cmake ..
-make
-```
-
----
-
-## 🧪 Ejecución
+Execute the compiled program from the `build` directory with the required command-line arguments:
 
 ```bash
-./random_image_generator <ancho> <alto> <duración_segundos> <fps> <extensión>
+./random_image_generator <width> <height> <duration_seconds> <fps> <extension>
 ```
 
-### Parámetros
+**Arguments:**
 
-- `ancho`: Ancho de la imagen (ej: `1920`)
-- `alto`: Alto de la imagen (ej: `1080`)
-- `duración_segundos`: Cuánto tiempo generar imágenes (ej: `60`)
-- `fps`: Cuántas imágenes por segundo (ej: `30`)
-- `extensión`: Formato de salida (`jpg`, `png`, etc.)
+*   `<width>`: Width of the images to generate (e.g., `1920`).
+*   `<height>`: Height of the images to generate (e.g., `1080`).
+*   `<duration_seconds>`: How long the image generation process should run (e.g., `300` for 5 minutes).
+*   `<fps>`: Target frames per second for image generation (e.g., `50`).
+*   `<extension>`: Image file extension for saving (e.g., `png`, `jpg`, `bmp`). OpenCV\'s default saving behavior for this extension will be used.
 
-### Ejemplo
+**Example:**
 
 ```bash
-./random_image_generator 640 480 10 30 png
+./random_image_generator 1920 1080 60 30 png
 ```
+This command will generate 1920x1080 images for 60 seconds at a target of 30 FPS, saving them as PNG files in a directory named `generated_images`.
 
-Este comando genera imágenes de 640x480 durante 10 segundos a 30 fps en formato PNG. Los archivos se guardarán en la carpeta `generated_images/`.
+## Understanding the Output
 
----
+The application will print two main summaries:
 
-## 📊 Ejemplo de Salida
+### Resumen generación (hilo generador)
+This summary is printed by the image generator thread once it finishes its generation phase.
+*   `Imágenes objetivo a generar`: The total number of images the generator aimed to produce based on the input duration and FPS.
+*   `Imágenes realmente generadas y encoladas`: The actual number of images the generator thread successfully created and placed into the processing queue.
+*   `Imágenes descartadas por atraso (no encoladas)`: The number of frames the generator skipped because it was falling behind the target FPS. This happens if generating and enqueuing an image takes longer than the time allocated per frame.
+*   `Tiempo de generación del hilo`: The wall-clock time taken by the generator thread.
+*   `FPS efectivo generación (reloj del hilo)`: The effective FPS achieved by the generator (`generadas y encoladas / tiempo de generación`).
 
-```text
---- Resumen generación (hilo generador) ---
-Imágenes objetivo a generar: 300
-Imágenes realmente generadas y encoladas: 299
-Imágenes descartadas por atraso (no encoladas): 1
-Tiempo de generación del hilo: 10.01 segundos
-FPS efectivo generación (reloj del hilo): 29.89
+### Resumen Global
+This summary is printed at the very end of the program, after all saver threads have completed.
+*   `Imágenes generadas (contador global)`: Re-states the total images generated and enqueued. This should match the generator\'s summary.
+*   `Imágenes guardadas (contador global)`: The total number of images successfully written to disk by all saver threads.
+*   `Tiempo total de ejecución`: The total wall-clock time from the start of the `main` function to the end.
+*   `FPS efectivo de guardado (global, basado en tiempo total)`: The effective FPS for saving images, calculated as `imágenes guardadas / tiempo total de ejecución`.
+*   `Imágenes perdidas por cola (no alcanzaron a guardarse)`: Images that were successfully generated and enqueued but were dropped from the queue because it reached its `MAX_QUEUE_SIZE` limit and the savers couldn't process them fast enough.
+*   `Imágenes perdidas por atraso (ni siquiera generadas)`: Re-states the images the generator itself couldn't produce in time (same as "descartadas por atraso").
+*   `TOTAL imágenes perdidas`: The sum of images lost from the queue and images lost due to generation delay.
+*   `Imágenes verificadas en directorio`: An optional count of files found in the output directory. This can be a final check on the number of saved images.
 
---- Resumen Global ---
-Imágenes generadas (contador global): 299
-Imágenes guardadas (contador global): 299
-Tiempo total de ejecución: 10.21 segundos
-FPS efectivo de guardado (global): 29.30
-Imágenes perdidas por cola: 0
-Imágenes perdidas por atraso: 1
-TOTAL imágenes perdidas: 1
-```
+## Notes
 
----
+*   The application creates an output directory named `generated_images` in the current working directory (where the executable is run) if it doesn't already exist.
+*   The number of saver threads is currently fixed at `NUM_SAVER_THREADS = 7`.
+*   The maximum queue size between the generator and savers is defined by `MAX_QUEUE_SIZE`. If the queue is full, the generator will drop the oldest image to make space for a new one.
 
-## 📂 Estructura del Proyecto
-
-```
-VeryFastImageGenerator/
-├── CMakeLists.txt
-├── random_image_generator.cpp
-├── build/
-└── generated_images/
-```
-
----
-
-## 🧠 Créditos y Autoría
-
-Desarrollado por **Dante Quezada** como ejercicio avanzado de programación concurrente y procesamiento de imágenes en C++.  
-Incluye manejo seguro de sincronización entre hilos con `std::mutex`, `std::deque` y `std::condition_variable`.
