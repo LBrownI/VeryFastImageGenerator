@@ -225,23 +225,13 @@ int main(int argc, char *argv[])
     // Espera a que el hilo generador termine
     generatorThread.join();
 
-    // Espera a que la cola esté vacía antes de continuar
-    while (true) {
-        {
-            std::lock_guard<std::mutex> lock(queueMutex);
-            if (imageQueue.empty()) {
-                break;
-            }
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // Espera breve para no ocupar CPU
-    }
-
+    // Espera a que todos los hilos guardadores terminen
     for (int i = 0; i < NUM_SAVER_THREADS; ++i)
     {
         saverThreads[i].join();
     }
 
-    auto end_global = std::chrono::steady_clock::now();
+    auto end_global = std::chrono::steady_clock::now(); // Tiempo de finalización global
     std::chrono::duration<double> total_elapsed = end_global - start_global;
 
     // Imprime el resumen global de la ejecución
@@ -262,6 +252,7 @@ int main(int argc, char *argv[])
         int total_lost_images = lost_due_to_queue + lost_due_to_delay;
 
         std::cout << "Imágenes perdidas por cola (no alcanzaron a guardarse): " << lost_due_to_queue << "\n";
+        std::cout << "Imágenes perdidas por atraso (ni siquiera generadas): " << lost_due_to_delay << "\n";
         std::cout << "TOTAL imágenes perdidas: " << total_lost_images << "\n";
     }
 
