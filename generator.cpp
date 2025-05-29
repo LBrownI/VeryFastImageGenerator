@@ -56,24 +56,28 @@ cv::Mat generateRandomImage(int width, int height)
 }
 
 // Función ejecutada por el hilo generador de imágenes
-void imageGenerator(ThreadArgs args) {
+void imageGenerator(ThreadArgs args)
+{
     auto start_generation_timer = std::chrono::steady_clock::now();
     std::chrono::duration<double> frame_duration(1.0 / args.fps);
 
-    for (int i = 0; i < args.totalImages; ++i) {
-        auto next_frame_time = start_generation_timer + frame_duration * (i + 1.0);
-        auto current_time = std::chrono::steady_clock::now();
+    int i = 0;
+    auto start_time = std::chrono::steady_clock::now();
+    auto end_time = start_time + std::chrono::seconds(args.duration_seconds);
 
-        // Si estamos atrasados, saltamos este frame
+    while (std::chrono::steady_clock::now() < end_time)
+    {
+        auto current_time = std::chrono::steady_clock::now();
+        auto next_frame_time = start_time + std::chrono::duration<double>(1.0 / args.fps) * (i + 1);
+
         if (current_time > next_frame_time)
         {
             total_images_dropped_due_to_delay++;
+            i++;
             continue;
         }
 
-        // Simula espera para sincronizar con FPS deseado
         std::this_thread::sleep_until(next_frame_time);
-
         cv::Mat image = generateRandomImage(args.width, args.height);
 
         {
@@ -88,6 +92,7 @@ void imageGenerator(ThreadArgs args) {
 
         queueCV.notify_all();
         total_images_generated_count++;
+        i++;
     }
 
     { // Bloque de lock para proteger la escritura de finishedGenerating
@@ -241,15 +246,14 @@ int main(int argc, char *argv[])
         double overall_saving_fps = total_images_saved_count.load() / total_elapsed.count();
         std::cout << std::fixed << std::setprecision(2)
                   << "FPS efectivo de guardado (global, basado en tiempo total): " << overall_saving_fps << "\n";
-        
+
         int lost_due_to_queue = total_images_enqueued_count.load() - total_images_saved_count.load();
-int lost_due_to_delay = total_images_dropped_due_to_delay.load();
-int total_lost_images = lost_due_to_queue + lost_due_to_delay;
+        int lost_due_to_delay = total_images_dropped_due_to_delay.load();
+        int total_lost_images = lost_due_to_queue + lost_due_to_delay;
 
-std::cout << "Imágenes perdidas por cola (no alcanzaron a guardarse): " << lost_due_to_queue << "\n";
-std::cout << "Imágenes perdidas por atraso (ni siquiera generadas): " << lost_due_to_delay << "\n";
-std::cout << "TOTAL imágenes perdidas: " << total_lost_images << "\n";
-
+        std::cout << "Imágenes perdidas por cola (no alcanzaron a guardarse): " << lost_due_to_queue << "\n";
+        std::cout << "Imágenes perdidas por atraso (ni siquiera generadas): " << lost_due_to_delay << "\n";
+        std::cout << "TOTAL imágenes perdidas: " << total_lost_images << "\n";
     }
 
     // Verificación opcional: contar archivos en el directorio de salida
